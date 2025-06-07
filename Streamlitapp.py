@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+import requests
+import json
 
 # Set Streamlit page configuration
 st.set_page_config(layout="wide", page_title="Gemini Data Dashboard")
@@ -25,8 +27,48 @@ def clean_data(df):
     df['Engagements'] = pd.to_numeric(df['Engagements'], errors='coerce').fillna(0)
     return df
 
+# --- Gemini API Call Function ---
+def get_gemini_response(prompt_text, api_key):
+    """
+    Calls the Gemini API to get a text response.
+    """
+    if not api_key:
+        return "API Key tidak tersedia untuk menghasilkan insight."
+
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+    headers = {
+        'Content-Type': 'application/json'
+    }
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}]
+    }
+
+    try:
+        response = requests.post(api_url, headers=headers, data=json.dumps(payload))
+        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        result = response.json()
+
+        if result.get("candidates") and result["candidates"][0].get("content") and \
+           result["candidates"][0]["content"].get("parts") and \
+           result["candidates"][0]["content"]["parts"][0].get("text"):
+            return result["candidates"][0]["content"]["parts"][0]["text"]
+        else:
+            return "Tidak dapat menghasilkan insight. Struktur respons tidak terduga."
+    except requests.exceptions.RequestException as e:
+        return f"Terjadi kesalahan saat memanggil Gemini API: {e}. Pastikan API Key valid dan koneksi internet stabil."
+    except json.JSONDecodeError:
+        return "Terjadi kesalahan saat menguraikan respons JSON dari API."
+    except Exception as e:
+        return f"Terjadi kesalahan yang tidak terduga: {e}"
+
 # --- Main App Components ---
 def main():
+    # --- API Key Configuration (FOR DEMONSTRATION ONLY) ---
+    # In a production environment, use st.secrets or environment variables
+    # For example:
+    # GEMINI_API_KEY = st.secrets["gemini_api_key"]
+    GEMINI_API_KEY = "AIzaSyC7SjhHIrA2VrmuYcTYFhCXR2Ffg09L2_Y" # Your API Key here
+
     st.markdown(
         """
         <style>
@@ -108,16 +150,24 @@ def main():
             df = clean_data(df.copy()) # Clean data immediately after upload
             st.success("File berhasil diunggah dan data dibersihkan!")
 
-            # --- Key Action Summary Section ---
+            # --- Key Action Summary Section (Dynamic) ---
             st.markdown("<div class='summary-section' style='margin-top: 2rem;'>", unsafe_allow_html=True)
             st.subheader("Ringkasan Strategi Kampanye (Key Action Summary)")
-            st.markdown("""
-                Berdasarkan analisis sentimen dan platform engagement, kampanye yang berfokus pada konten visual di Instagram dan TikTok terbukti paling efektif dalam mendorong interaksi positif. Disarankan untuk mengoptimalkan postingan pada jam-jam puncak (misalnya, sore hari) untuk menjangkau audiens secara maksimal.
 
-                Identifikasi lokasi dengan tingkat interaksi tertinggi untuk meluncurkan kampanye yang lebih terlokalisasi. Pertimbangkan kolaborasi dengan influencer lokal di area tersebut untuk meningkatkan relevansi dan jangkauan.
-
-                Analisis tren engagement dari waktu ke waktu menunjukkan adanya fluktuasi musiman. Merencanakan konten tematik yang sesuai dengan periode-periode ini dapat membantu menjaga momentum dan relevansi kampanye secara keseluruhan.
-            """)
+            # Generate dynamic summary only if data is available
+            if not df.empty:
+                summary_prompt = f"""
+                Berdasarkan data sosial media berikut (hanya 5 baris pertama untuk contoh):
+                {df.head().to_string()}
+                dan kolom yang tersedia: {df.columns.tolist()}.
+                Tuliskan ringkasan strategi kampanye yang relevan dan singkat (sekitar 3-5 poin kunci) dalam bahasa Indonesia,
+                fokus pada engagement, sentimen, platform, media type, dan lokasi.
+                """
+                with st.spinner("Menghasilkan ringkasan strategi kampanye..."):
+                    campaign_summary = get_gemini_response(summary_prompt, GEMINI_API_KEY)
+                    st.markdown(campaign_summary)
+            else:
+                st.markdown("Silakan unggah data untuk menghasilkan ringkasan strategi kampanye.")
             st.markdown("</div>", unsafe_allow_html=True)
 
             # --- Filters Section ---
@@ -189,20 +239,20 @@ def main():
                                        color_discrete_sequence=px.colors.qualitative.Plotly)
                 fig_sentiment.update_traces(textposition='inside', textinfo='percent+label')
                 st.plotly_chart(fig_sentiment, use_container_width=True)
+
                 st.markdown("### Insight:")
-                st.markdown("""
-                <ul class='insights-list'>
-                    <li>Sentimen dominan menunjukkan persepsi merek secara keseluruhan.</li>
-                    <li>Bagian terkecil mengungkapkan area yang memerlukan perhatian atau peningkatan.</li>
-                    <li>Membandingkan positif vs. negatif menyoroti keseimbangan sentimen.</li>
-                </ul>
-                """, unsafe_allow_html=True)
+                insight_prompt = f"""
+                Berdasarkan data sentimen berikut (sentimen: jumlah): {sentiment_counts.to_string()}.
+                Berikan 3 insight singkat dan relevan tentang sentimen ini dalam bahasa Indonesia.
+                """
+                with st.spinner("Menghasilkan insight sentimen..."):
+                    sentiment_insights = get_gemini_response(insight_prompt, GEMINI_API_KEY)
+                    st.markdown(sentiment_insights)
                 st.markdown("</div>", unsafe_allow_html=True)
 
             # 2. Line Chart: Engagement Trend over Time
             with col_chart2:
                 st.markdown("<div class='chart-card'>", unsafe_allow_html=True)
-                # Ensure 'Date' is datetime for proper sorting and grouping
                 df_engagement_trend = filtered_df.copy()
                 df_engagement_trend['Date_dt'] = pd.to_datetime(df_engagement_trend['Date'])
                 engagement_by_date = df_engagement_trend.groupby('Date_dt')['Engagements'].sum().reset_index()
@@ -213,14 +263,15 @@ def main():
                 fig_engagement.update_xaxes(title_text='Date')
                 fig_engagement.update_yaxes(title_text='Total Engagements')
                 st.plotly_chart(fig_engagement, use_container_width=True)
+
                 st.markdown("### Insight:")
-                st.markdown("""
-                <ul class='insights-list'>
-                    <li>Puncak dan lembah menunjukkan dampak kampanye atau acara tertentu.</li>
-                    <li>Tren keseluruhan menunjukkan pertumbuhan atau penurunan jangka panjang.</li>
-                    <li>Pola musiman atau siklus mingguan mungkin terlihat.</li>
-                </ul>
-                """, unsafe_allow_html=True)
+                insight_prompt = f"""
+                Berdasarkan tren engagement berikut (tanggal: engagement): {engagement_by_date.to_string()}.
+                Berikan 3 insight singkat dan relevan tentang tren engagement ini dalam bahasa Indonesia.
+                """
+                with st.spinner("Menghasilkan insight tren engagement..."):
+                    engagement_insights = get_gemini_response(insight_prompt, GEMINI_API_KEY)
+                    st.markdown(engagement_insights)
                 st.markdown("</div>", unsafe_allow_html=True)
 
             col_chart3, col_chart4 = st.columns(2)
@@ -235,14 +286,15 @@ def main():
                 fig_platform.update_xaxes(title_text='Platform')
                 fig_platform.update_yaxes(title_text='Total Engagements')
                 st.plotly_chart(fig_platform, use_container_width=True)
+
                 st.markdown("### Insight:")
-                st.markdown("""
-                <ul class='insights-list'>
-                    <li>Platform dengan engagement tertinggi adalah pusat audiens utama Anda.</li>
-                    <li>Platform dengan engagement rendah mungkin memerlukan penyesuaian strategi konten.</li>
-                    <li>Perbedaan antar platform dapat memandu alokasi sumber daya.</li>
-                </ul>
-                """, unsafe_allow_html=True)
+                insight_prompt = f"""
+                Berdasarkan engagement platform berikut (platform: engagement): {platform_engagements.to_string()}.
+                Berikan 3 insight singkat dan relevan tentang engagement platform ini dalam bahasa Indonesia.
+                """
+                with st.spinner("Menghasilkan insight platform engagement..."):
+                    platform_insights = get_gemini_response(insight_prompt, GEMINI_API_KEY)
+                    st.markdown(platform_insights)
                 st.markdown("</div>", unsafe_allow_html=True)
 
             # 4. Pie Chart: Media Type Mix
@@ -255,14 +307,15 @@ def main():
                                         color_discrete_sequence=px.colors.qualitative.Vivid)
                 fig_media_type.update_traces(textposition='inside', textinfo='percent+label')
                 st.plotly_chart(fig_media_type, use_container_width=True)
+
                 st.markdown("### Insight:")
-                st.markdown("""
-                <ul class='insights-list'>
-                    <li>Jenis media dominan menunjukkan preferensi konten.</li>
-                    <li>Jenis media yang kurang terwakili mungkin merupakan peluang yang belum dimanfaatkan.</li>
-                    <li>Evolusi campuran dapat menunjukkan pergeseran dalam efektivitas strategi konten.</li>
-                </ul>
-                """, unsafe_allow_html=True)
+                insight_prompt = f"""
+                Berdasarkan jenis media berikut (jenis media: jumlah): {media_type_counts.to_string()}.
+                Berikan 3 insight singkat dan relevan tentang jenis media ini dalam bahasa Indonesia.
+                """
+                with st.spinner("Menghasilkan insight jenis media..."):
+                    media_type_insights = get_gemini_response(insight_prompt, GEMINI_API_KEY)
+                    st.markdown(media_type_insights)
                 st.markdown("</div>", unsafe_allow_html=True)
 
             # 5. Bar Chart: Top 5 Locations
@@ -275,14 +328,15 @@ def main():
             fig_location.update_xaxes(title_text='Location')
             fig_location.update_yaxes(title_text='Number of Posts')
             st.plotly_chart(fig_location, use_container_width=True)
+
             st.markdown("### Insight:")
-            st.markdown("""
-            <ul class='insights-list'>
-                <li>Lokasi teratas menyoroti segmen audiens geografis utama.</li>
-                <li>Lokasi yang berkembang menunjukkan potensi untuk kampanye bertarget.</li>
-                <li>Konsentrasi di area tertentu mungkin mencerminkan fokus bisnis.</li>
-            </ul>
-            """, unsafe_allow_html=True)
+            insight_prompt = f"""
+            Berdasarkan 5 lokasi teratas berikut (lokasi: jumlah): {location_counts.to_string()}.
+            Berikan 3 insight singkat dan relevan tentang lokasi ini dalam bahasa Indonesia.
+            """
+            with st.spinner("Menghasilkan insight lokasi..."):
+                location_insights = get_gemini_response(insight_prompt, GEMINI_API_KEY)
+                st.markdown(location_insights)
             st.markdown("</div>", unsafe_allow_html=True)
 
         except Exception as e:
